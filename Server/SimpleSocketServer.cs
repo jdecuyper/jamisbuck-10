@@ -1,20 +1,17 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace SocketServer
 {
-    class SimpleSocketServer
+    class SimpleSocketServer : IDisposable
     {
         private Thread _serverThread;
         private TcpListener _listener;
-        private int _port = 7000;
-        private bool _isRunning = false;
+        private int _port;
+        private bool _isListening = false;
 
         public int Port
         {
@@ -36,15 +33,14 @@ namespace SocketServer
         /// </summary>
         public void Start()
         {
-            Console.WriteLine("Start server...");
-            _isRunning = true;
+            Console.WriteLine("Start server, press any key to shut down...");
             _serverThread.Start();
         }
 
-        public void Stop()
+        private void Stop()
         {
             Console.WriteLine("Stop server...");
-            if (!_isRunning)
+            if (!_isListening)
                 return;
 
             _serverThread.Abort();
@@ -55,10 +51,21 @@ namespace SocketServer
         private void Listen()
         {
             _listener = new TcpListener(IPAddress.Any, this._port);
-            Console.WriteLine("Listening...");
-            _listener.Start();
+            Console.WriteLine(String.Format("Listening on port {0}...", _port));
 
-            while (true)
+            try
+            {
+                _listener.Start();
+                _isListening = true;
+            }
+            catch (SocketException se)
+            {
+                Console.WriteLine(String.Format("Could not create TCP listener on port {0}", _port));
+                Console.Write(se.ToString() + "\n\n");
+                _isListening = false;
+            }
+
+            while (true && _isListening)
             {
                 if (!_listener.Pending())
                 {
@@ -77,40 +84,67 @@ namespace SocketServer
 
             NetworkStream stream = client.GetStream();
 
-            // Send ready\n
-            string dataToSend = "ready\n";
-            Console.WriteLine("Send: " + dataToSend);
-            var data = Encoding.ASCII.GetBytes(dataToSend);
-            stream.Write(data, 0, data.Length);
-
-            // Wait for client to respond
-            while (!stream.DataAvailable)
+            if (stream.CanRead && stream.CanWrite)
             {
-                Console.WriteLine("Waiting for data...");
-                Thread.Sleep(1000);
+                SendReady(stream);
+                string query = ReadQuery(client, stream);
+                SendResponse(client, stream, query);
             }
-
-            // Receive query from client
-            byte[] buffer = new byte[client.ReceiveBufferSize];
-            int bytesRead = stream.Read(buffer, 0, client.ReceiveBufferSize);
-            string dataReceived = Encoding.ASCII.GetString(buffer, 0, bytesRead);
-            Console.WriteLine("Receive query: " + dataReceived);
-
-            // Send response to client
-            Console.WriteLine("Send the response");
-            dataToSend = Convert.ToString(int.Parse(dataReceived), 2);
-            data = Encoding.ASCII.GetBytes(dataToSend);
-            stream.Write(data, 0, data.Length);
-            stream.Flush();
 
             Console.WriteLine("Close connection");
             client.Close();
+        }
+
+        private void SendReady(NetworkStream stream)
+        {
+            Console.WriteLine("Send 'ready' to client");
+            var data = Encoding.ASCII.GetBytes("ready\n");
+            stream.Write(data, 0, data.Length);
+        }
+
+        private string ReadQuery(TcpClient client, NetworkStream stream)
+        {
+            // Receive lenght of the query
+            byte[] buffer = new byte[4];
+            stream.Read(buffer, 0, 4);
+            int length = BitConverter.ToInt32(buffer, 0);
+            Console.WriteLine("Read length of the query: {0}", length);
+
+            // Receive query
+            byte[] query = new byte[length];
+            stream.Read(query, 0, length);
+            string queryTxt = Encoding.ASCII.GetString(query, 0, length);
+            Console.WriteLine("Read query: {0}", queryTxt);
+
+            return queryTxt;
+        }
+
+        private void SendResponse(TcpClient client, NetworkStream stream, string query)
+        {
+            // Convert digit its binary representation
+            string response = Convert.ToString(int.Parse(query), 2);
+
+            // Send length of the response
+            int length = response.Length;
+            byte[] lengthBytes = BitConverter.GetBytes(length);
+            stream.Write(lengthBytes, 0, 4);
+            Console.WriteLine("Send length of the response: {0}", length);
+
+            // Send response
+            byte[] responseBytes = Encoding.ASCII.GetBytes(Convert.ToString(int.Parse(query), 2));
+            stream.Write(responseBytes, 0, length);
+            Console.WriteLine("Send response: {0}", response);
         }
 
         private void Initialize(int port)
         {
             this._port = port;
             _serverThread = new Thread(this.Listen);
+        }
+
+        public void Dispose()
+        {
+            Stop();
         }
     }
 }
